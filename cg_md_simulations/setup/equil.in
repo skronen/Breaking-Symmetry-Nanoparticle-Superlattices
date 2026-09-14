@@ -1,0 +1,176 @@
+#pgp simulation equilibration
+
+variable timesteps equal 200000
+variable timesteps2 equal 1000000
+variable dumptime equal 50000
+
+label startup
+
+variable settemp equal "298" 
+units real
+
+atom_style full
+
+
+variable rseed equal RSEEDREPLACE
+
+#NONBOND PARAMS
+variable lj_cut equal 2.5*7.6 #2.5*sigma
+pair_style lj/cut/coul/debye DEBYEREPLACE ${lj_cut} COULCUTREPLACE
+pair_modify shift yes
+dielectric DIELREPLACE 
+
+
+#BOND PARAMS
+bond_style harmonic
+#angle_style harmonic
+angle_style none
+
+#boundary f p p 
+#read_data data.data
+#fix xwalls all wall/reflect xlo EDGE xhi EDGE
+
+boundary f f f 
+read_data data.data
+fix xwalls all wall/reflect xlo EDGE xhi EDGE ylo EDGE yhi EDGE zlo EDGE zhi EDGE
+
+
+velocity all create ${settemp} ${rseed} loop geom
+
+
+timestep 1
+
+comm_modify cutoff 180
+neigh_modify delay 0 every 5 check yes
+
+thermo 10000
+fix 2 nonrigid nvt temp ${settemp} ${settemp} $(100.0*dt)
+
+set type 5 charge 1
+set type 10 charge 1
+
+fix freeze rig setforce 0 0 0
+minimize 1.0e-4 1.0e-6 100 1000
+
+run 50000 upto
+
+reset_timestep 0 
+
+############### COMPUTE PGP SIZES #################
+dump	mydump all custom ${dumptime} pgp_equil.lammpstrj id mol type x y z
+dump_modify     mydump sort id append no
+
+group ends type 1 6 5 10
+dump	edump ends custom 1000 equil_ends.lammpstrj id mol type x y z
+dump_modify     edump sort id append no
+
+group center1 type 1
+group center2 type 6
+group ends1 type 5
+group ends2 type 10
+
+variable x1x equal xcm(center1,x)
+variable x1y equal xcm(center1,y)
+variable x1z equal xcm(center1,z)
+
+variable x2x equal xcm(center2,x)
+variable x2y equal xcm(center2,y)
+variable x2z equal xcm(center2,z)
+
+compute e1 ends1 property/atom x y z
+compute e2 ends2 property/atom x y z
+
+variable endsx1 atom sqrt((c_e1[1]-v_x1x)^2+(c_e1[2]-v_x1y)^2+(c_e1[3]-v_x1z)^2)
+variable endsx2 atom sqrt((c_e2[1]-v_x2x)^2+(c_e2[2]-v_x2y)^2+(c_e2[3]-v_x2z)^2)
+
+variable mean1 equal ave(v_endsx1)
+variable mean2 equal ave(v_endsx2)
+
+compute mean1 ends1 reduce ave v_endsx1
+compute mean2 ends2 reduce ave v_endsx2
+
+
+variable mean1_val equal c_mean1
+variable mean2_val equal c_mean2
+
+#group grafts type 3 5 8 10 #c
+group p1 molecule 1
+group p2 molecule 2
+#group grafts1 intersect grafts p1
+#group grafts2 intersect grafts p2
+
+#compute myrg1 grafts1 gyration
+#compute myrg2 grafts2 gyration
+
+
+fix dumprg1 all ave/time 1 ${timesteps} ${timesteps} c_mean1 file ree1.txt
+fix dumprg2 all ave/time 1 ${timesteps} ${timesteps} c_mean2 file ree2.txt
+
+variable mycoul equal ecoul+elong
+fix dumpcoul all ave/time 100 1 100 v_mycoul file equil1_coul.txt 
+
+run ${timesteps}
+
+unfix dumpcoul
+undump edump
+############### MOVE PGPS CLOSE TO ONE ANOTHER #################
+shell bash cleanup_rees.sh
+
+variable rg1 file p_ree1.txt
+variable rg2 file p_ree2.txt
+variable radius file radius.txt
+
+variable distance equal ${rg1}+${rg2}#+${radius}
+print "Setting distance to ${distance}"
+
+variable halfbox equal ${distance}/2+1
+
+
+variable x1 equal xcm(center1,x)
+variable x2 equal xcm(center2,x)
+variable currdist equal ${x2}-${x1}
+
+variable xshift equal ${currdist}-${distance}
+variable halfshift equal ${xshift}/2
+variable neghalfshift equal -${xshift}/2
+
+displace_atoms p1 move v_halfshift 0 0 units box
+displace_atoms p2 move v_neghalfshift 0 0 units box
+
+change_box all x final -${halfbox} ${halfbox} units box
+unfix xwalls
+fix xwalls all wall/reflect xlo EDGE xhi EDGE
+
+undump mydump
+unfix dumprg1
+unfix dumprg2
+
+unfix 2
+fix 1 nonrigid nve/limit 0.1
+run 10000
+
+unfix 1
+
+############### RUN FINAL EQUILIBRATION #################
+fix 2 nonrigid nvt temp ${settemp} ${settemp} $(100.0*dt)
+
+reset_timestep 0
+
+dump	mydump all custom ${dumptime} pgp_equil2.lammpstrj id mol type x y z
+dump_modify     mydump sort id append no
+
+
+run ${timesteps2}
+
+
+write_restart post_equil.rs
+
+quit 0
+
+
+
+
+
+
+
+

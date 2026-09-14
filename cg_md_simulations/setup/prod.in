@@ -1,0 +1,111 @@
+#pgp simulation production
+
+variable timesteps_per_stage equal 5000000
+variable dumptime equal ${timesteps_per_stage}/10
+variable dumptimeends equal ${timesteps_per_stage}/500
+
+shell ls ./prod.rs.*; echo "$?" > restarting.tmp
+variable notrestarting file restarting.tmp
+print "notrestarting ${notrestarting}"
+shell rm restarting.tmp
+
+if "${notrestarting}" then "jump SELF startup" else "jump SELF rs" 
+
+##############################
+label rs
+
+print "restarting"
+
+read_restart prod.rs.*
+
+jump SELF setup
+
+write_restart post_prod.rs
+
+quit 0
+##############################
+
+###########################
+label startup
+print "starting"
+
+read_restart post_equil.rs
+reset_timestep 0
+
+jump SELF setup
+
+write_restart post_prod.rs
+
+quit 0
+#######################
+
+#######################
+label loop
+
+
+run ${timesteps_per_stage} upto
+
+
+quit 0
+##########################
+
+
+
+##################
+label setup
+
+
+set type 5 charge 1
+set type 10 charge -1
+variable settemp equal "298" 
+
+
+#NONBOND PARAMS
+variable lj_cut equal 2.5*7.6 #2.5*sigma
+pair_style lj/cut/coul/debye DEBYEREPLACE ${lj_cut} COULCUTREPLACE
+pair_modify shift yes
+dielectric DIELREPLACE 
+
+#BOND PARAMS
+bond_style harmonic
+#angle_style harmonic
+angle_style none
+
+timestep 0.2
+
+comm_style tiled
+fix bal all balance 1000 1.1 rcb
+comm_modify cutoff 5.0
+neigh_modify delay 0 every 5 check yes
+
+thermo 10000
+fix 2 nonrigid nvt temp ${settemp} ${settemp} $(100.0*dt)
+#fix 2 nonrigid langevin ${settemp} ${settemp} 1 55415
+#fix 3 nonrigid nve
+fix xwalls all wall/reflect xlo EDGE xhi EDGE
+
+dump	mydump all custom ${dumptime} pgp_prod.lammpstrj id mol type x y z
+dump_modify     mydump sort id append yes
+
+group ends type 1 6 4 5 9 10
+dump enddump ends custom ${dumptimeends} ends.lammpstrj id mol type x y z
+dump_modify     enddump sort id append yes
+
+#######################DELETE THIS IF NO PAIRS DONE######################
+group bondends type 5 10
+
+compute close bondends pair/local dist
+compute 1 bondends property/local patom1 patom2 ptype1 ptype2
+
+dump mypairs all local 1000 pairs.txt c_close c_1[*]
+##########################################################################
+
+variable mycoul equal ecoul+elong
+fix dumpcoul all ave/time 1000 1 1000 v_mycoul file prod_coul.txt 
+
+restart ${dumptime} prod.rs.*
+jump SELF loop
+##################
+
+
+
